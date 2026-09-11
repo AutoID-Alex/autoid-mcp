@@ -8,3 +8,11 @@ mcp-private-key*
 registry-private-key*
 .DS_Store
 Thumbs.db
+
+# Node build/runtime
+node_modules/
+dist/
+*.log
+
+# Keep the public environment template
+!.env.example

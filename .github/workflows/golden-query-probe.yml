@@ -29,6 +29,10 @@ jobs:
         shell: bash
         run: python tests/tc27_relationship_probe.py 2>&1 | tee tc27-relationships.log
 
+      - name: Probe model-tag lifecycle hygiene
+        shell: bash
+        run: python tests/model_tag_lifecycle_probe.py 2>&1 | tee model-tag-lifecycle.log
+
       - name: Run golden query discovery probe
         shell: bash
         run: |
@@ -48,6 +52,9 @@ jobs:
             let tc27 = fs.existsSync('tc27-relationships.log')
               ? fs.readFileSync('tc27-relationships.log', 'utf8')
               : 'tc27-relationships.log was not created.';
+            let lifecycle = fs.existsSync('model-tag-lifecycle.log')
+              ? fs.readFileSync('model-tag-lifecycle.log', 'utf8')
+              : 'model-tag-lifecycle.log was not created.';
             let golden = fs.existsSync('golden-probe.log')
               ? fs.readFileSync('golden-probe.log', 'utf8')
               : 'golden-probe.log was not created.';
@@ -57,13 +64,18 @@ jobs:
               tc27 = '[...truncated to last 50000 characters...]\n' + tc27.slice(-relationshipMaxChars);
             }
 
+            const lifecycleMaxChars = 50000;
+            if (lifecycle.length > lifecycleMaxChars) {
+              lifecycle = '[...truncated to last 50000 characters...]\n' + lifecycle.slice(-lifecycleMaxChars);
+            }
+
             const goldenMaxChars = 40000;
             if (golden.length > goldenMaxChars) {
               golden = '[...truncated to last 40000 characters...]\n' + golden.slice(-goldenMaxChars);
             }
 
             const status = '${{ job.status }}';
-            const body = `${marker}\n## Golden Query Probe diagnostics\n\n**Job status:** ${status}\n\n### TC27 child product-tag relationship discovery\n\n\`\`\`text\n${tc27}\n\`\`\`\n\n<details><summary>Focused ZT610 get_product payload</summary>\n\n\`\`\`text\n${payload}\n\`\`\`\n</details>\n\n<details><summary>Full golden-query output</summary>\n\n\`\`\`text\n${golden}\n\`\`\`\n</details>`;
+            const body = `${marker}\n## Golden Query Probe diagnostics\n\n**Job status:** ${status}\n\n### Model-tag lifecycle hygiene\n\n\`\`\`text\n${lifecycle}\n\`\`\`\n\n### TC27 child product-tag relationship discovery\n\n\`\`\`text\n${tc27}\n\`\`\`\n\n<details><summary>Focused ZT610 get_product payload</summary>\n\n\`\`\`text\n${payload}\n\`\`\`\n</details>\n\n<details><summary>Full golden-query output</summary>\n\n\`\`\`text\n${golden}\n\`\`\`\n</details>`;
 
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;

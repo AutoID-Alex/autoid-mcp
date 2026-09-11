@@ -1,0 +1,11 @@
+services:
+  autoid-mcp:
+    build: ..
+    restart: unless-stopped
+    environment:
+      AUTOID_API_BASE: https://www.autoid.ro/wp-json/autoid-ai/v1
+      MCP_PUBLIC_HOST: mcp.autoid.ro
+      PORT: 3000
+      AUTOID_API_TIMEOUT_MS: 15000
+    ports:
+      - "127.0.0.1:3000:3000"
