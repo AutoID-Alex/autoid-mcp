@@ -1,0 +1,17 @@
+[Unit]
+Description=AutoID MCP Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/autoid-mcp
+EnvironmentFile=/opt/autoid-mcp/.env
+ExecStart=/usr/bin/node /opt/autoid-mcp/dist/server.js
+Restart=always
+RestartSec=3
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target
