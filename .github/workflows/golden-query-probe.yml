@@ -25,6 +25,11 @@ jobs:
         shell: bash
         run: python tests/zt610_product_payload_probe.py | tee zt610-payload.log
 
+      - name: Probe TC27 product-tag relationships
+        shell: bash
+        continue-on-error: true
+        run: python tests/tc27_relationship_probe.py 2>&1 | tee tc27-relationships.log
+
       - name: Run golden query discovery probe
         shell: bash
         run: |
@@ -41,17 +46,25 @@ jobs:
             const payload = fs.existsSync('zt610-payload.log')
               ? fs.readFileSync('zt610-payload.log', 'utf8')
               : 'zt610-payload.log was not created.';
+            let tc27 = fs.existsSync('tc27-relationships.log')
+              ? fs.readFileSync('tc27-relationships.log', 'utf8')
+              : 'tc27-relationships.log was not created.';
             let golden = fs.existsSync('golden-probe.log')
               ? fs.readFileSync('golden-probe.log', 'utf8')
               : 'golden-probe.log was not created.';
 
-            const maxChars = 50000;
-            if (golden.length > maxChars) {
-              golden = '[...truncated to last 50000 characters...]\n' + golden.slice(-maxChars);
+            const relationshipMaxChars = 50000;
+            if (tc27.length > relationshipMaxChars) {
+              tc27 = '[...truncated to last 50000 characters...]\n' + tc27.slice(-relationshipMaxChars);
+            }
+
+            const goldenMaxChars = 40000;
+            if (golden.length > goldenMaxChars) {
+              golden = '[...truncated to last 40000 characters...]\n' + golden.slice(-goldenMaxChars);
             }
 
             const status = '${{ job.status }}';
-            const body = `${marker}\n## Golden Query Probe diagnostics\n\n**Job status:** ${status}\n\n### Focused ZT610 get_product payload\n\n\`\`\`text\n${payload}\n\`\`\`\n\n<details><summary>Full golden-query output</summary>\n\n\`\`\`text\n${golden}\n\`\`\`\n</details>`;
+            const body = `${marker}\n## Golden Query Probe diagnostics\n\n**Job status:** ${status}\n\n### TC27 child product-tag relationship discovery\n\n\`\`\`text\n${tc27}\n\`\`\`\n\n<details><summary>Focused ZT610 get_product payload</summary>\n\n\`\`\`text\n${payload}\n\`\`\`\n</details>\n\n<details><summary>Full golden-query output</summary>\n\n\`\`\`text\n${golden}\n\`\`\`\n</details>`;
 
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
