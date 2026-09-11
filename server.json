@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "ro.autoid/autoid-support",
+  "title": "AutoID Product Catalog & Support",
+  "description": "Read-only AutoID Romania MCP for product search, live stock/prices, specs, and technical support.",
+  "repository": {
+    "url": "https://github.com/AutoID-Alex/autoid-mcp",
+    "source": "github"
+  },
+  "version": "0.3.0",
+  "websiteUrl": "https://mcp.autoid.ro/",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.autoid.ro/mcp"
+    }
+  ]
+}

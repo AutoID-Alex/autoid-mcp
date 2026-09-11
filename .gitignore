@@ -1,0 +1,10 @@
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+mcp-private-key*
+registry-private-key*
+.DS_Store
+Thumbs.db
