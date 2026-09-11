@@ -29,6 +29,11 @@ jobs:
         shell: bash
         run: python tests/tc27_relationship_probe.py 2>&1 | tee tc27-relationships.log
 
+      - name: Discover ZT410 successor exposure
+        shell: bash
+        continue-on-error: true
+        run: python tests/zt410_successor_probe.py 2>&1 | tee zt410-successor.log
+
       - name: Run golden query discovery probe
         shell: bash
         run: |
@@ -48,6 +53,9 @@ jobs:
             let tc27 = fs.existsSync('tc27-relationships.log')
               ? fs.readFileSync('tc27-relationships.log', 'utf8')
               : 'tc27-relationships.log was not created.';
+            let zt410 = fs.existsSync('zt410-successor.log')
+              ? fs.readFileSync('zt410-successor.log', 'utf8')
+              : 'zt410-successor.log was not created.';
             let golden = fs.existsSync('golden-probe.log')
               ? fs.readFileSync('golden-probe.log', 'utf8')
               : 'golden-probe.log was not created.';
@@ -57,13 +65,18 @@ jobs:
               tc27 = '[...truncated to last 50000 characters...]\n' + tc27.slice(-relationshipMaxChars);
             }
 
+            const successorMaxChars = 40000;
+            if (zt410.length > successorMaxChars) {
+              zt410 = '[...truncated to last 40000 characters...]\n' + zt410.slice(-successorMaxChars);
+            }
+
             const goldenMaxChars = 40000;
             if (golden.length > goldenMaxChars) {
               golden = '[...truncated to last 40000 characters...]\n' + golden.slice(-goldenMaxChars);
             }
 
             const status = '${{ job.status }}';
-            const body = `${marker}\n## Golden Query Probe diagnostics\n\n**Job status:** ${status}\n\n### TC27 child product-tag relationship discovery\n\n\`\`\`text\n${tc27}\n\`\`\`\n\n<details><summary>Focused ZT610 get_product payload</summary>\n\n\`\`\`text\n${payload}\n\`\`\`\n</details>\n\n<details><summary>Full golden-query output</summary>\n\n\`\`\`text\n${golden}\n\`\`\`\n</details>`;
+            const body = `${marker}\n## Golden Query Probe diagnostics\n\n**Job status:** ${status}\n\n### TC27 child product-tag relationship discovery\n\n\`\`\`text\n${tc27}\n\`\`\`\n\n### ZT410 discontinued → successor discovery\n\n\`\`\`text\n${zt410}\n\`\`\`\n\n<details><summary>Focused ZT610 get_product payload</summary>\n\n\`\`\`text\n${payload}\n\`\`\`\n</details>\n\n<details><summary>Full golden-query output</summary>\n\n\`\`\`text\n${golden}\n\`\`\`\n</details>`;
 
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
