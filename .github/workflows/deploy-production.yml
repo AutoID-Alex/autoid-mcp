@@ -69,7 +69,8 @@ jobs:
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
-            "$DEPLOY_USER@$DEPLOY_HOST"
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'cd /home/autoidtes45/autoid-mcp && bash deploy/update.sh'
 
       - name: Verify public readiness
         run: curl --fail --silent --show-error --max-time 15 https://mcp.autoid.ro/ready >/dev/null
