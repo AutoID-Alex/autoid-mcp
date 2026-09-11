@@ -27,7 +27,6 @@ jobs:
 
       - name: Probe TC27 product-tag relationships
         shell: bash
-        continue-on-error: true
         run: python tests/tc27_relationship_probe.py 2>&1 | tee tc27-relationships.log
 
       - name: Run golden query discovery probe
