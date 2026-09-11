@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import re
 import sys
 import traceback
 from urllib.parse import urlparse
@@ -15,7 +16,6 @@ CASES = [
     ("tc27_relationships", "get_related_products", {"target": "TC27", "limit": 50}, False),
     ("tc27_relationship_summary", "get_related_products_summary", {"target": "TC27"}, False),
     ("zt610_group", "get_product_group", {"model": "ZT610"}, True),
-    ("zt610_variants", "list_product_variants", {"model": "ZT610", "limit": 100, "offset": 0}, True),
     ("mc9300_exact_sku", "get_product", {"sku": "MC930B-GSHDG4RW"}, False),
     ("mc9300_offer", "get_product_offer", {"sku": "MC930B-GSHDG4RW"}, False),
     ("cab_squix_printhead", "get_related_products", {"target": "CAB SQUIX 2", "limit": 50}, False),
@@ -27,6 +27,18 @@ ZT610_SUPPORT_CASES = [
     ("zt610_support_quick_start", "ZT610 quick start", ("quick start", "quickstart", "quick-start")),
     ("zt610_support_driver", "ZT610 driver", ("driver",)),
 ]
+
+# Only these direct fields are accepted as structured product evidence. We do
+# not inspect title, description, excerpt, marketing copy, or arbitrary text.
+STRUCTURED_ATTRIBUTE_KEYS = (
+    "attributes",
+    "structured_attributes",
+    "specifications",
+    "specs",
+)
+SKU_KEYS = ("sku", "product_sku", "variant_sku")
+RESOLUTION_FIELD_HINTS = ("resolution", "rezolutie", "dpi")
+INTERFACE_FIELD_HINTS = ("interface", "interfaces", "interfata", "interfete", "connectivity", "conectivitate")
 
 # A verified support hit can point either to the AutoID Support Center itself
 # or to the manufacturer's official Zebra source.
@@ -71,6 +83,15 @@ def decode_jsonish(value):
         return value
 
 
+def deep_decode(value):
+    value = decode_jsonish(value)
+    if isinstance(value, dict):
+        return {key: deep_decode(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [deep_decode(child) for child in value]
+    return value
+
+
 def walk(value, path=()):
     value = decode_jsonish(value)
     if isinstance(value, dict):
@@ -83,6 +104,17 @@ def walk(value, path=()):
         yield path, value
 
 
+def walk_objects(value):
+    value = deep_decode(value)
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from walk_objects(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk_objects(child)
+
+
 def normalized_text(value):
     parts = []
     for path, leaf in walk(value):
@@ -90,6 +122,186 @@ def normalized_text(value):
         if leaf is not None:
             parts.append(str(leaf))
     return "\n".join(parts).lower()
+
+
+def normalize_label(value):
+    text = str(value).lower()
+    text = text.replace("ț", "t").replace("ţ", "t").replace("ș", "s").replace("ş", "s")
+    text = text.replace("ă", "a").replace("â", "a").replace("î", "i")
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def direct_value_ci(mapping, keys):
+    lookup = {str(key).lower(): value for key, value in mapping.items()}
+    for key in keys:
+        if key.lower() in lookup:
+            return lookup[key.lower()]
+    return None
+
+
+def structured_containers(obj):
+    if not isinstance(obj, dict):
+        return []
+    lookup = {str(key).lower(): value for key, value in obj.items()}
+    return [deep_decode(lookup[key]) for key in STRUCTURED_ATTRIBUTE_KEYS if key in lookup and lookup[key] is not None]
+
+
+def attribute_pairs(value):
+    """Yield (field label, field value) only from a structured attribute container."""
+    value = deep_decode(value)
+    if isinstance(value, dict):
+        # Woo/API list-style attribute object: {name/slug/key, value/options/...}
+        label = direct_value_ci(value, ("name", "slug", "key", "attribute", "label"))
+        attr_value = direct_value_ci(value, ("value", "values", "option", "options", "terms"))
+        if label is not None and attr_value is not None:
+            yield str(label), attr_value
+
+        # Map-style attributes: {resolution: "600 dpi", interfaces: [...]}
+        metadata_keys = {
+            "id", "name", "slug", "key", "attribute", "label", "value", "values",
+            "option", "options", "terms", "visible", "variation", "position",
+        }
+        for key, child in value.items():
+            if str(key).lower() not in metadata_keys:
+                if not isinstance(child, (dict, list)):
+                    yield str(key), child
+                elif isinstance(child, list) and all(not isinstance(item, (dict, list)) for item in child):
+                    yield str(key), child
+                yield from attribute_pairs(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from attribute_pairs(child)
+
+
+def flattened_value(value):
+    if isinstance(value, list):
+        return " ".join(flattened_value(item) for item in value)
+    if isinstance(value, dict):
+        return " ".join(flattened_value(item) for item in value.values())
+    return str(value)
+
+
+def is_resolution_field(label):
+    norm = normalize_label(label)
+    return any(hint in norm for hint in RESOLUTION_FIELD_HINTS)
+
+
+def is_interface_field(label):
+    norm = normalize_label(label)
+    return any(hint in norm for hint in INTERFACE_FIELD_HINTS)
+
+
+def has_600_dpi(value):
+    norm = normalize_label(flattened_value(value))
+    return bool(re.search(r"(?:^| )600(?: |$)", norm)) and ("dpi" in norm or norm == "600")
+
+
+def has_ethernet(value):
+    norm = normalize_label(flattened_value(value))
+    return "ethernet" in norm or "lan" in norm or "rj45" in norm or "rj 45" in norm
+
+
+def structured_configuration(obj):
+    resolution_matches = []
+    interface_matches = []
+    for container in structured_containers(obj):
+        for label, value in attribute_pairs(container):
+            if is_resolution_field(label) and has_600_dpi(value):
+                resolution_matches.append((label, value))
+            if is_interface_field(label) and has_ethernet(value):
+                interface_matches.append((label, value))
+    return resolution_matches, interface_matches
+
+
+def find_zt610_600_ethernet_variant(result):
+    diagnostics = []
+    for obj in walk_objects(result):
+        if not isinstance(obj, dict):
+            continue
+        sku = direct_value_ci(obj, SKU_KEYS)
+        containers = structured_containers(obj)
+        if sku is None or not containers:
+            continue
+        resolution_matches, interface_matches = structured_configuration(obj)
+        if len(diagnostics) < 8:
+            diagnostics.append(
+                {
+                    "sku": str(sku),
+                    "structured_keys": [key for key in obj if str(key).lower() in STRUCTURED_ATTRIBUTE_KEYS],
+                    "resolution_matches": resolution_matches,
+                    "interface_matches": interface_matches,
+                }
+            )
+        if resolution_matches and interface_matches:
+            return str(sku), obj, resolution_matches, interface_matches
+
+    raise SmokeFailure(
+        "ZT610 variants contain no single SKU with structured 600 dpi + Ethernet evidence. "
+        "Candidate diagnostics=" + json.dumps(diagnostics, ensure_ascii=False, default=str)
+    )
+
+
+def validate_exact_product_configuration(result, expected_sku):
+    candidates = []
+    for obj in walk_objects(result):
+        if not isinstance(obj, dict):
+            continue
+        sku = direct_value_ci(obj, SKU_KEYS)
+        if sku is None or str(sku).strip().lower() != expected_sku.strip().lower():
+            continue
+        resolution_matches, interface_matches = structured_configuration(obj)
+        candidates.append(
+            {
+                "sku": str(sku),
+                "resolution_matches": resolution_matches,
+                "interface_matches": interface_matches,
+            }
+        )
+        if resolution_matches and interface_matches:
+            print(
+                "ASSERT get_product: sku=" + str(sku)
+                + " resolution=" + json.dumps(resolution_matches, ensure_ascii=False, default=str)
+                + " interfaces=" + json.dumps(interface_matches, ensure_ascii=False, default=str)
+            )
+            return
+    raise SmokeFailure(
+        f"get_product({expected_sku}) did not preserve structured 600 dpi + Ethernet evidence; "
+        + "candidates=" + json.dumps(candidates, ensure_ascii=False, default=str)
+    )
+
+
+def run_zt610_product_configuration_contract(client, passed, blocking_failed):
+    print("\n===== GOLDEN PROBE: zt610_600dpi_ethernet_variant [BLOCKING] =====")
+    try:
+        variants = call_tool(
+            client,
+            "list_product_variants",
+            {"model": "ZT610", "limit": 100, "offset": 0},
+        )
+        sku, _variant, resolution_matches, interface_matches = find_zt610_600_ethernet_variant(variants)
+        print(
+            "ASSERT variant: sku=" + sku
+            + " resolution=" + json.dumps(resolution_matches, ensure_ascii=False, default=str)
+            + " interfaces=" + json.dumps(interface_matches, ensure_ascii=False, default=str)
+        )
+        passed.append(("zt610_600dpi_ethernet_variant", "BLOCKING"))
+    except Exception as exc:
+        error = str(exc)
+        blocking_failed.append(("zt610_600dpi_ethernet_variant", error))
+        print(f"FAIL: {error}")
+        traceback.print_exc()
+        return
+
+    print("\n===== GOLDEN PROBE: zt610_600dpi_ethernet_exact_product [BLOCKING] =====")
+    try:
+        product = call_tool(client, "get_product", {"sku": sku})
+        validate_exact_product_configuration(product, sku)
+        passed.append(("zt610_600dpi_ethernet_exact_product", "BLOCKING"))
+    except Exception as exc:
+        error = str(exc)
+        blocking_failed.append(("zt610_600dpi_ethernet_exact_product", error))
+        print(f"FAIL: {error}")
+        traceback.print_exc()
 
 
 def trusted_support_hosts(value):
@@ -178,7 +390,6 @@ def choose_fetch_value(property_name, candidates):
     if case_insensitive:
         return case_insensitive[0]
 
-    # Schema names sometimes differ slightly from search-result field names.
     if lower_name in {hint.lower() for hint in FETCH_KEY_HINTS}:
         for hint in FETCH_KEY_HINTS:
             for key, value in candidates:
@@ -293,6 +504,7 @@ def main():
                 print(f"OBSERVE: {error}")
             traceback.print_exc()
 
+    run_zt610_product_configuration_contract(client, passed, blocking_failed)
     run_zt610_support_contract(client, tools, passed, blocking_failed)
 
     print("\n===== GOLDEN PROBE SUMMARY =====")
@@ -311,7 +523,7 @@ def main():
     if blocking_failed:
         sys.exit(1)
 
-    print("\nSUCCESS: all blocking ZT610 golden queries and support semantics passed")
+    print("\nSUCCESS: all blocking ZT610 product/configuration/support semantics passed")
 
 
 if __name__ == "__main__":
