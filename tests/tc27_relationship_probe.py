@@ -136,10 +136,12 @@ def main():
     if relation_status != "success":
         print("RELATIONSHIP_DISCOVERY_ERROR:", relation_status)
         print(json.dumps(relations, ensure_ascii=False, default=str)[:10000])
-        return
+        raise RuntimeError(f"get_related_products failed for {TARGET}: {relation_status}")
 
     skus = extract_child_skus(relations)[:MAX_CHILDREN]
     print("RELATED_SKUS:", json.dumps(skus, ensure_ascii=False))
+    if not skus:
+        raise AssertionError(f"No related SKUs returned for {TARGET}")
 
     rows = []
     for sku in skus:
@@ -160,11 +162,37 @@ def main():
         rows.append(row)
         print("CHILD:", json.dumps(row, ensure_ascii=False, default=str)[:7000])
 
+    successful_products = [row for row in rows if row["product_status"] == "success"]
+    missing_tags = [row["sku"] for row in successful_products if not row["compatible_models"]]
+    missing_target = [
+        row["sku"]
+        for row in successful_products
+        if row["compatible_models"] and not row["contains_target"]
+    ]
+
     print("\n=== SUMMARY ===")
     print("INSPECTED:", len(rows))
+    print("PRODUCT_SUCCESS:", len(successful_products))
     print("WITH_PRODUCT_TAGS:", sum(bool(row["compatible_models"]) for row in rows))
     print("TAGGED_TC27:", sum(row["contains_target"] for row in rows))
     print("OFFER_SUCCESS:", sum(row["offer_status"] == "success" for row in rows))
+    print("MISSING_PRODUCT_TAGS:", json.dumps(missing_tags, ensure_ascii=False))
+    print("MISSING_TARGET_TAG:", json.dumps(missing_target, ensure_ascii=False))
+
+    if not successful_products:
+        raise AssertionError("No related SKU could be fetched with get_product")
+    if missing_tags:
+        raise AssertionError(
+            "Canonical get_product payload is missing product_tags for related SKUs: "
+            + ", ".join(missing_tags)
+        )
+    if missing_target:
+        raise AssertionError(
+            f"Reverse compatibility lookup for {TARGET} returned products without the {TARGET} product_tag: "
+            + ", ".join(missing_target)
+        )
+
+    print("CONTRACT: PASS - product_tags are exposed and every successfully fetched related product contains TC27")
 
 
 if __name__ == "__main__":
