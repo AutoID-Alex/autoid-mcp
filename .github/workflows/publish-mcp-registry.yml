@@ -1,0 +1,75 @@
+name: Publish MCP Registry Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-registry-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Validate, smoke test, and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Verify release tag matches server.json
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE_VERSION="$(jq -r '.version' server.json)"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "${FILE_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "server.json version ${FILE_VERSION} does not match tag ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Smoke test live MCP before publishing metadata
+        run: |
+          python tests/mcp_smoke.py \
+            --endpoint "https://mcp.autoid.ro/mcp" \
+            --strict-tools
+
+      - name: Install mcp-publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" \
+            | tar xz mcp-publisher
+          ./mcp-publisher --help >/dev/null
+
+      - name: Validate server.json
+        run: ./mcp-publisher validate server.json
+
+      - name: Authenticate with AutoID DNS identity
+        shell: bash
+        env:
+          MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MCP_PRIVATE_KEY:-}" ]; then
+            echo "Missing GitHub secret MCP_PRIVATE_KEY"
+            exit 1
+          fi
+          ./mcp-publisher login dns \
+            --domain autoid.ro \
+            --private-key "${MCP_PRIVATE_KEY}"
+
+      - name: Publish to official MCP Registry
+        run: ./mcp-publisher publish server.json
