@@ -21,6 +21,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Probe exact ZT610 product payload
+        shell: bash
+        run: python tests/zt610_product_payload_probe.py | tee zt610-payload.log
+
       - name: Run golden query discovery probe
         shell: bash
         run: |
@@ -34,17 +38,20 @@ jobs:
           script: |
             const fs = require('fs');
             const marker = '<!-- autoid-golden-probe -->';
-            let log = fs.existsSync('golden-probe.log')
+            const payload = fs.existsSync('zt610-payload.log')
+              ? fs.readFileSync('zt610-payload.log', 'utf8')
+              : 'zt610-payload.log was not created.';
+            let golden = fs.existsSync('golden-probe.log')
               ? fs.readFileSync('golden-probe.log', 'utf8')
               : 'golden-probe.log was not created.';
 
-            const maxChars = 60000;
-            if (log.length > maxChars) {
-              log = '[...truncated to last 60000 characters...]\n' + log.slice(-maxChars);
+            const maxChars = 50000;
+            if (golden.length > maxChars) {
+              golden = '[...truncated to last 50000 characters...]\n' + golden.slice(-maxChars);
             }
 
             const status = '${{ job.status }}';
-            const body = `${marker}\n## Golden Query Probe diagnostics\n\n**Job status:** ${status}\n\n<details open><summary>Live MCP probe output</summary>\n\n\`\`\`text\n${log}\n\`\`\`\n</details>`;
+            const body = `${marker}\n## Golden Query Probe diagnostics\n\n**Job status:** ${status}\n\n### Focused ZT610 get_product payload\n\n\`\`\`text\n${payload}\n\`\`\`\n\n<details><summary>Full golden-query output</summary>\n\n\`\`\`text\n${golden}\n\`\`\`\n</details>`;
 
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
