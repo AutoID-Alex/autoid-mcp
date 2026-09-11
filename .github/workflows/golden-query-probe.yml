@@ -29,7 +29,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python tests/golden_probe.py 2>&1 | tee golden-probe.log
+          python tests/golden_probe_runner.py 2>&1 | tee golden-probe.log
 
       - name: Publish probe diagnostics to PR
         if: always() && github.event_name == 'pull_request'
