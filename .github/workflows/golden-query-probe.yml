@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
 
 jobs:
   probe:
@@ -19,5 +21,60 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Probe exact ZT610 product payload
+        shell: bash
+        run: python tests/zt610_product_payload_probe.py | tee zt610-payload.log
+
       - name: Run golden query discovery probe
-        run: python tests/golden_probe.py
+        shell: bash
+        run: |
+          set -o pipefail
+          python tests/golden_probe_runner.py 2>&1 | tee golden-probe.log
+
+      - name: Publish probe diagnostics to PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- autoid-golden-probe -->';
+            const payload = fs.existsSync('zt610-payload.log')
+              ? fs.readFileSync('zt610-payload.log', 'utf8')
+              : 'zt610-payload.log was not created.';
+            let golden = fs.existsSync('golden-probe.log')
+              ? fs.readFileSync('golden-probe.log', 'utf8')
+              : 'golden-probe.log was not created.';
+
+            const maxChars = 50000;
+            if (golden.length > maxChars) {
+              golden = '[...truncated to last 50000 characters...]\n' + golden.slice(-maxChars);
+            }
+
+            const status = '${{ job.status }}';
+            const body = `${marker}\n## Golden Query Probe diagnostics\n\n**Job status:** ${status}\n\n### Focused ZT610 get_product payload\n\n\`\`\`text\n${payload}\n\`\`\`\n\n<details><summary>Full golden-query output</summary>\n\n\`\`\`text\n${golden}\n\`\`\`\n</details>`;
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.find(comment => comment.body && comment.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
