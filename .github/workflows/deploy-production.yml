@@ -1,0 +1,76 @@
+name: Deploy MCP Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autoid-mcp-production
+  cancel-in-progress: false
+
+jobs:
+  validate-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check
+        run: npm run check
+
+      - name: Build
+        run: npm run build
+
+      - name: Configure production SSH
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.MCP_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.MCP_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          test -n "$KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/autoid_mcp_deploy
+          chmod 600 ~/.ssh/autoid_mcp_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy production
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.MCP_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.MCP_DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.MCP_DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_PORT"
+          test -n "$DEPLOY_USER"
+          ssh \
+            -i ~/.ssh/autoid_mcp_deploy \
+            -p "$DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'cd /home/autoidtes45/autoid-mcp && bash deploy/update.sh'
+
+      - name: Verify public readiness
+        run: curl --fail --silent --show-error --max-time 15 https://mcp.autoid.ro/ready >/dev/null
