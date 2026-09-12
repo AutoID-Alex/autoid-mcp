@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import socket
 import sys
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit, urlunsplit
@@ -19,6 +21,10 @@ EXPECTED_TOOLS = {
     "autoid_support_health",
     "autoid_api_health",
 }
+
+TRANSIENT_HTTP_CODES = {520, 521, 522, 523, 524}
+RETRY_DELAYS_SECONDS = (15, 60)
+MAX_RETRY_AFTER_SECONDS = 120
 
 
 class SmokeFailure(RuntimeError):
@@ -45,8 +51,20 @@ def http_get(url: str, timeout: int) -> tuple[int, str, dict]:
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         raise SmokeFailure(f"GET {url} failed with HTTP {exc.code}: {body[:500]}") from exc
-    except urllib.error.URLError as exc:
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
         raise SmokeFailure(f"GET {url} failed: {exc}") from exc
+
+
+def parse_retry_after(body: str, fallback: int) -> int:
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return fallback
+
+    retry_after = parsed.get("retry_after") if isinstance(parsed, dict) else None
+    if isinstance(retry_after, (int, float)) and retry_after > 0:
+        return min(max(int(retry_after), fallback), MAX_RETRY_AFTER_SECONDS)
+    return fallback
 
 
 def parse_mcp_body(body: str, request_id=None):
@@ -111,42 +129,69 @@ class MCPClient:
         if params is not None:
             payload["params"] = params
 
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-            "User-Agent": "autoid-mcp-contract-test/1.0",
-            "Mcp-Method": method,
-        }
-        if method == "tools/call" and isinstance(params, dict) and params.get("name"):
-            headers["Mcp-Name"] = str(params["name"])
-        if self.protocol_version:
-            headers["MCP-Protocol-Version"] = self.protocol_version
-        if self.session_id:
-            headers["Mcp-Session-Id"] = self.session_id
+        last_error = None
+        attempts = len(RETRY_DELAYS_SECONDS) + 1
 
-        req = urllib.request.Request(
-            self.endpoint,
-            data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
+        for attempt in range(attempts):
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "User-Agent": "autoid-mcp-contract-test/1.0",
+                "Mcp-Method": method,
+            }
+            if method == "tools/call" and isinstance(params, dict) and params.get("name"):
+                headers["Mcp-Name"] = str(params["name"])
+            if self.protocol_version:
+                headers["MCP-Protocol-Version"] = self.protocol_version
+            if self.session_id:
+                headers["Mcp-Session-Id"] = self.session_id
 
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                body = response.read().decode("utf-8", "replace")
-                session = response.headers.get("Mcp-Session-Id") or response.headers.get("MCP-Session-Id")
-                if session:
-                    self.session_id = session
-                if notification:
-                    return None
-                message = parse_mcp_body(body, request_id=request_id)
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", "replace")
-            raise SmokeFailure(
-                f"MCP {method} failed with HTTP {exc.code}: {body[:1000]}"
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise SmokeFailure(f"MCP {method} failed: {exc}") from exc
+            req = urllib.request.Request(
+                self.endpoint,
+                data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                    body = response.read().decode("utf-8", "replace")
+                    session = response.headers.get("Mcp-Session-Id") or response.headers.get("MCP-Session-Id")
+                    if session:
+                        self.session_id = session
+                    if notification:
+                        return None
+                    message = parse_mcp_body(body, request_id=request_id)
+                break
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", "replace")
+                last_error = SmokeFailure(
+                    f"MCP {method} failed with HTTP {exc.code}: {body[:1000]}"
+                )
+                if exc.code not in TRANSIENT_HTTP_CODES or attempt >= attempts - 1:
+                    raise last_error from exc
+
+                delay = parse_retry_after(body, RETRY_DELAYS_SECONDS[attempt])
+                print(
+                    f"WARN MCP {method}: transient HTTP {exc.code}; "
+                    f"retry {attempt + 1}/{attempts - 1} in {delay}s",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+                last_error = SmokeFailure(f"MCP {method} failed: {exc}")
+                if attempt >= attempts - 1:
+                    raise last_error from exc
+
+                delay = RETRY_DELAYS_SECONDS[attempt]
+                print(
+                    f"WARN MCP {method}: transient transport error {exc!r}; "
+                    f"retry {attempt + 1}/{attempts - 1} in {delay}s",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+        else:
+            raise last_error or SmokeFailure(f"MCP {method} failed after retries")
 
         if not isinstance(message, dict):
             raise SmokeFailure(f"MCP {method} returned an invalid message: {message!r}")
