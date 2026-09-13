@@ -6,7 +6,7 @@ import { autoIdGet, apiBase, AutoIdApiError } from './autoid-api.js';
 import { supportMcpCall, supportMcpSearch, supportMcpUrl, SupportMcpError } from './support-mcp.js';
 
 const SERVER_NAME = 'autoid-products-support';
-const SERVER_VERSION = '0.3.1';
+const SERVER_VERSION = '0.3.2';
 
 const availabilitySchema = z
   .enum(['all', 'available', 'autoid', 'supplier', 'out_of_stock'])
@@ -144,6 +144,61 @@ function buildServer() {
             lifecycle,
           }),
         );
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'list_products',
+    {
+      title: 'List all AutoID products',
+      description:
+        'Exhaustive read-only product registry for catalog synchronization. Pages through every published WooCommerce product, including grouped models and standalone/exact products. Use entity_type=grouped or single to filter without approximating completeness from search.',
+      inputSchema: z.object({
+        limit: z.number().int().min(1).max(500).default(250),
+        offset: z.number().int().min(0).default(0),
+        entity_type: z.enum(['all', 'grouped', 'single']).default('all'),
+      }),
+    },
+    async ({ limit, offset, entity_type }) => {
+      try {
+        return toolResult(await autoIdGet('/products', { limit, offset, entity_type }));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'list_brands',
+    {
+      title: 'List AutoID brands',
+      description:
+        'Returns the complete canonical WooCommerce brand/manufacturer taxonomy used by AutoID. This taxonomy is authoritative for brand archives and is never inferred from product titles.',
+      inputSchema: z.object({}),
+    },
+    async () => {
+      try {
+        return toolResult(await autoIdGet('/brands'));
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'list_categories',
+    {
+      title: 'List AutoID product categories',
+      description:
+        'Returns the complete canonical WooCommerce product_cat taxonomy with parent/depth/path data for category archives and catalog filters.',
+      inputSchema: z.object({}),
+    },
+    async () => {
+      try {
+        return toolResult(await autoIdGet('/categories'));
       } catch (error) {
         return toolError(error);
       }
@@ -472,6 +527,8 @@ app.get('/health', (_req, res) => {
     capabilities: {
       products: true,
       product_group_discovery: true,
+      full_product_discovery: true,
+      taxonomy_archives: true,
       offers: true,
       variants: true,
       relations: true,
@@ -488,7 +545,7 @@ app.get('/health', (_req, res) => {
       customer_price_display: 'RON inc VAT via canonical pricing.ron_display / price.ron_display',
       ron_display_role: 'WooCommerce display/validation; EUR metadata remains commercial authority',
       support_grounding: 'search_support -> fetch_support; manufacturer/AutoID source metadata remains authoritative',
-      catalog_discovery: 'list_product_groups only; do not approximate completeness with search queries',
+      catalog_discovery: 'list_products for exhaustive catalog; list_product_groups for grouped-only discovery; never approximate completeness with search queries',
     },
   });
 });

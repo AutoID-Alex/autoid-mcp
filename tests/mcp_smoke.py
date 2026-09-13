@@ -10,6 +10,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 EXPECTED_TOOLS = {
     "search_products",
+    "list_product_groups",
+    "list_products",
+    "list_brands",
+    "list_categories",
     "get_product_group",
     "list_product_variants",
     "get_product",
