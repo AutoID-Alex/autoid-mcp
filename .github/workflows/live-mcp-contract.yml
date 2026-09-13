@@ -3,7 +3,6 @@ name: Live MCP Contract Tests
 on:
   push:
     branches: ["main"]
-  pull_request:
   workflow_dispatch:
   schedule:
     - cron: "17 */6 * * *"
