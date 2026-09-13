@@ -122,6 +122,35 @@ function buildServer() {
   );
 
   server.registerTool(
+    'list_product_groups',
+    {
+      title: 'List AutoID product groups',
+      description:
+        'Enumerates canonical grouped-product models for exhaustive catalog synchronization. This is a discovery tool, not search: clients should page through the complete result set using limit and offset. Results come only from the first-party AutoID canonical API and must not be reconstructed from search queries.',
+      inputSchema: z.object({
+        limit: z.number().int().min(1).max(500).default(100),
+        offset: z.number().int().min(0).default(0),
+        brand: z.string().min(1).max(120).optional(),
+        lifecycle: z.enum(['active', 'discontinued', 'all']).default('all'),
+      }),
+    },
+    async ({ limit, offset, brand, lifecycle }) => {
+      try {
+        return toolResult(
+          await autoIdGet('/product-groups', {
+            limit,
+            offset,
+            brand,
+            lifecycle,
+          }),
+        );
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
     'get_product_group',
     {
       title: 'Get AutoID product group',
@@ -442,6 +471,7 @@ app.get('/health', (_req, res) => {
     readiness_endpoint: '/ready',
     capabilities: {
       products: true,
+      product_group_discovery: true,
       offers: true,
       variants: true,
       relations: true,
@@ -458,6 +488,7 @@ app.get('/health', (_req, res) => {
       customer_price_display: 'RON inc VAT via canonical pricing.ron_display / price.ron_display',
       ron_display_role: 'WooCommerce display/validation; EUR metadata remains commercial authority',
       support_grounding: 'search_support -> fetch_support; manufacturer/AutoID source metadata remains authoritative',
+      catalog_discovery: 'list_product_groups only; do not approximate completeness with search queries',
     },
   });
 });
