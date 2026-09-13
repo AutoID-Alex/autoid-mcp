@@ -5,6 +5,7 @@ The AutoID MCP currently exposes the following read-only tools.
 | Tool | Purpose |
 | --- | --- |
 | `search_products` | Search products, grouped models and exact SKUs. |
+| `list_product_groups` | Enumerate canonical grouped models exhaustively for catalog synchronization. |
 | `get_product_group` | Retrieve a grouped product/model. |
 | `list_product_variants` | List exact SKU variants for a grouped model, including price, stock and technical attributes. |
 | `get_product` | Retrieve canonical data for an exact product/SKU. |
@@ -15,6 +16,14 @@ The AutoID MCP currently exposes the following read-only tools.
 | `fetch_support` | Fetch a selected verified support resource before relying on it. |
 | `autoid_support_health` | Check availability of the AutoID Support Center source. |
 | `autoid_api_health` | Check availability of the canonical AutoID product API. |
+
+## Catalog discovery
+
+`list_product_groups` is the only supported exhaustive grouped-model discovery path. It pages through the canonical AutoID API endpoint `/product-groups` using `limit` and `offset`, with optional `brand` and `lifecycle` filters.
+
+Do not approximate full-catalog discovery by issuing wildcard, alphabetic or repeated `search_products` queries. Search is relevance-oriented and is not a completeness contract.
+
+The canonical `/product-groups` endpoint must return a stable paginated collection with enough information to identify each model/group and total pagination state. MCP proxies that canonical response without inventing or deduplicating models itself.
 
 ## Product configuration
 
