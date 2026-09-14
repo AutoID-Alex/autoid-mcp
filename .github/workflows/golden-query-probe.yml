@@ -21,6 +21,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Probe live NEW / Refurbished / Used offer contract
+        shell: bash
+        run: python tests/condition_offer_probe.py | tee condition-offer.log
+
       - name: Probe exact ZT610 product payload
         shell: bash
         run: python tests/zt610_product_payload_probe.py | tee zt610-payload.log
@@ -46,6 +50,9 @@ jobs:
           script: |
             const fs = require('fs');
             const marker = '<!-- autoid-golden-probe -->';
+            const conditionOffer = fs.existsSync('condition-offer.log')
+              ? fs.readFileSync('condition-offer.log', 'utf8')
+              : 'condition-offer.log was not created.';
             const payload = fs.existsSync('zt610-payload.log')
               ? fs.readFileSync('zt610-payload.log', 'utf8')
               : 'zt610-payload.log was not created.';
@@ -75,7 +82,7 @@ jobs:
             }
 
             const status = '${{ job.status }}';
-            const body = `${marker}\n## Golden Query Probe diagnostics\n\n**Job status:** ${status}\n\n### Model-tag lifecycle hygiene\n\n\`\`\`text\n${lifecycle}\n\`\`\`\n\n### TC27 child product-tag relationship discovery\n\n\`\`\`text\n${tc27}\n\`\`\`\n\n<details><summary>Focused ZT610 get_product payload</summary>\n\n\`\`\`text\n${payload}\n\`\`\`\n</details>\n\n<details><summary>Full golden-query output</summary>\n\n\`\`\`text\n${golden}\n\`\`\`\n</details>`;
+            const body = `${marker}\n## Golden Query Probe diagnostics\n\n**Job status:** ${status}\n\n### Live condition offer contract\n\n\`\`\`text\n${conditionOffer}\n\`\`\`\n\n### Model-tag lifecycle hygiene\n\n\`\`\`text\n${lifecycle}\n\`\`\`\n\n### TC27 child product-tag relationship discovery\n\n\`\`\`text\n${tc27}\n\`\`\`\n\n<details><summary>Focused ZT610 get_product payload</summary>\n\n\`\`\`text\n${payload}\n\`\`\`\n</details>\n\n<details><summary>Full golden-query output</summary>\n\n\`\`\`text\n${golden}\n\`\`\`\n</details>`;
 
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
