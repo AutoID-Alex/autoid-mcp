@@ -1,9 +1,9 @@
 {
   "name": "autoid-mcp-server",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "Read-only MCP server for AutoID catalog, offers, relations and technical support.",
+  "description": "Read-only MCP server for AutoID catalog, condition-aware offers, relations and technical support.",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",

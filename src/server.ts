@@ -6,7 +6,7 @@ import { autoIdGet, apiBase, AutoIdApiError } from './autoid-api.js';
 import { supportMcpCall, supportMcpSearch, supportMcpUrl, SupportMcpError } from './support-mcp.js';
 
 const SERVER_NAME = 'autoid-products-support';
-const SERVER_VERSION = '0.3.2';
+const SERVER_VERSION = '0.4.0';
 
 const availabilitySchema = z
   .enum(['all', 'available', 'autoid', 'supplier', 'out_of_stock'])
@@ -15,6 +15,12 @@ const availabilitySchema = z
 const relationTypeSchema = z
   .enum(['all', 'accessory', 'consumable', 'software', 'service_contract'])
   .default('all');
+
+const conditionSchema = z
+  .enum(['all', 'new', 'refurbished', 'used'])
+  .default('all');
+
+type ProductCondition = z.infer<typeof conditionSchema>;
 
 function toolResult(data: unknown) {
   return {
@@ -41,6 +47,108 @@ function toolError(error: unknown) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isEnabledConditionOffer(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const enabled = value.enabled;
+  return enabled === true || enabled === 1 || enabled === '1' || enabled === 'true' || enabled === 'yes';
+}
+
+/**
+ * Condition projection is deliberately non-inferential. The MCP only projects
+ * an offers.new/refurbished/used contract when the canonical API actually sends it.
+ * Legacy single-offer payloads are treated as NEW only; Refurbished/Used are never
+ * synthesized from prices, descriptions or WooCommerce sale-price fields.
+ */
+function projectCondition(payload: unknown, condition: ProductCondition): unknown {
+  if (condition === 'all' || !isRecord(payload)) return payload;
+  const offers = isRecord(payload.offers) ? payload.offers : null;
+
+  if (!offers) {
+    return condition === 'new'
+      ? {
+          ...payload,
+          condition_filter: {
+            requested: condition,
+            source_support: false,
+            semantics: 'legacy_single_offer_is_new',
+          },
+        }
+      : {
+          ...payload,
+          condition_filter: {
+            requested: condition,
+            source_support: false,
+            matched: false,
+            semantics: 'condition_not_exposed_by_canonical_source',
+          },
+          selected_offer: null,
+        };
+  }
+
+  const selected = isRecord(offers[condition]) ? offers[condition] : null;
+  return {
+    ...payload,
+    condition_filter: {
+      requested: condition,
+      source_support: true,
+      matched: selected !== null && isEnabledConditionOffer(selected),
+    },
+    selected_offer: selected,
+  };
+}
+
+function projectVariantConditions(payload: unknown, condition: ProductCondition): unknown {
+  if (condition === 'all' || !isRecord(payload)) return payload;
+  const collectionKey = Array.isArray(payload.items)
+    ? 'items'
+    : Array.isArray(payload.variants)
+      ? 'variants'
+      : Array.isArray(payload.products)
+        ? 'products'
+        : null;
+  if (!collectionKey) return projectCondition(payload, condition);
+
+  const sourceItems = payload[collectionKey] as unknown[];
+  const sourceSupportsConditions = sourceItems.some((item) => isRecord(item) && isRecord(item.offers));
+  if (!sourceSupportsConditions) {
+    return condition === 'new'
+      ? {
+          ...payload,
+          condition_filter: {
+            requested: condition,
+            source_support: false,
+            semantics: 'legacy_variant_offer_is_new',
+          },
+        }
+      : {
+          ...payload,
+          [collectionKey]: [],
+          condition_filter: {
+            requested: condition,
+            source_support: false,
+            matched_count: 0,
+            semantics: 'condition_not_exposed_by_canonical_source',
+          },
+        };
+  }
+
+  const filtered = sourceItems.filter((item) => {
+    if (!isRecord(item)) return false;
+    const offers = isRecord(item.offers) ? item.offers : null;
+    return offers ? isEnabledConditionOffer(offers[condition]) : false;
+  });
+  return {
+    ...payload,
+    [collectionKey]: filtered,
+    condition_filter: {
+      requested: condition,
+      source_support: true,
+      source_count: sourceItems.length,
+      matched_count: filtered.length,
+    },
+  };
 }
 
 /**
@@ -229,23 +337,23 @@ function buildServer() {
     {
       title: 'List AutoID product variants',
       description:
-        'Lists exact SKUs belonging to an AutoID grouped product. Default availability=available. AutoID stock is prioritized before distribution-only stock. Use availability=all only when the user explicitly needs unavailable configurations too. Each returned commercial card can expose pricing.ron_display with ex-VAT and inc-VAT WooCommerce RON values.',
+        'Lists exact SKUs belonging to an AutoID grouped product. Each SKU may expose independent offers.new, offers.refurbished and offers.used records when the canonical API provides the condition contract. condition=refurbished or used filters only source-declared enabled offers and never infers condition from price or text. Default availability=available. AutoID stock is prioritized before distribution-only stock.',
       inputSchema: z.object({
         model: z.string().min(1).describe('Grouped product SKU/model, for example MC9300.'),
         availability: availabilitySchema,
+        condition: conditionSchema,
         limit: z.number().int().min(1).max(500).default(100),
         offset: z.number().int().min(0).default(0),
       }),
     },
-    async ({ model, availability, limit, offset }) => {
+    async ({ model, availability, condition, limit, offset }) => {
       try {
-        return toolResult(
-          await autoIdGet(`/product-groups/${encodeURIComponent(model)}/variants`, {
-            availability,
-            limit,
-            offset,
-          }),
-        );
+        const payload = await autoIdGet(`/product-groups/${encodeURIComponent(model)}/variants`, {
+          availability,
+          limit,
+          offset,
+        });
+        return toolResult(projectVariantConditions(payload, condition));
       } catch (error) {
         return toolError(error);
       }
@@ -257,14 +365,16 @@ function buildServer() {
     {
       title: 'Get exact AutoID SKU',
       description:
-        'Returns canonical data for an exact AutoID SKU. Use this for product identity and stable product data. For current price, stock or delivery availability, always call get_product_offer as well. The canonical product payload exposes WooCommerce RON display values separately from authoritative EUR metadata.',
+        'Returns canonical data for an exact AutoID SKU. The same SKU can carry NEW, REFURBISHED and USED commercial offers without cloning the WooCommerce product. Use condition to project a source-declared condition when present. For current commercial data always call get_product_offer as well; condition data is never inferred when the canonical source has not exposed it.',
       inputSchema: z.object({
         sku: z.string().min(1).describe('Exact AutoID product SKU.'),
+        condition: conditionSchema,
       }),
     },
-    async ({ sku }) => {
+    async ({ sku, condition }) => {
       try {
-        return toolResult(await autoIdGet(`/products/${encodeURIComponent(sku)}`));
+        const payload = await autoIdGet(`/products/${encodeURIComponent(sku)}`);
+        return toolResult(projectCondition(payload, condition));
       } catch (error) {
         return toolError(error);
       }
@@ -274,16 +384,18 @@ function buildServer() {
   server.registerTool(
     'get_product_offer',
     {
-      title: 'Get live AutoID price and stock',
+      title: 'Get live AutoID offers by condition',
       description:
-        'Returns the current authoritative AutoID offer for an exact SKU. ALWAYS use this tool before answering current price, stock, availability or delivery questions. pret_lista and pret_autoid_euro are authoritative EUR ex-VAT price sources; stock_autoid and stock_distributie are authoritative stock sources. For Romanian customer-facing output, use price.ron_display and prefer the inc-VAT value; RON comes from WooCommerce _regular_price/_sale_price and is display/validation data, not the commercial authority. Do not convert EUR yourself and do not infer availability from cached descriptions or WooCommerce sale-price presence.',
+        'Returns the current authoritative commercial offer data for one exact SKU. A single SKU may expose offers.new, offers.refurbished and offers.used with independent price and stock. Refurbished/Used may also include grade, warranty, note, Google eligibility, professional reconditioning/refurbisher and component-condition fields. ALWAYS use this tool before answering current price, stock, availability or delivery questions. The MCP never manufactures a condition: if the canonical API has not exposed offers.refurbished/offers.used, condition requests explicitly report source_support=false instead of treating the condition as unavailable.',
       inputSchema: z.object({
         sku: z.string().min(1).describe('Exact AutoID product SKU.'),
+        condition: conditionSchema,
       }),
     },
-    async ({ sku }) => {
+    async ({ sku, condition }) => {
       try {
-        return toolResult(await autoIdGet(`/offers/${encodeURIComponent(sku)}`));
+        const payload = await autoIdGet(`/offers/${encodeURIComponent(sku)}`);
+        return toolResult(projectCondition(payload, condition));
       } catch (error) {
         return toolError(error);
       }
@@ -530,6 +642,7 @@ app.get('/health', (_req, res) => {
       full_product_discovery: true,
       taxonomy_archives: true,
       offers: true,
+      condition_offers: ['new', 'refurbished', 'used'],
       variants: true,
       relations: true,
       ron_display_pricing: true,
@@ -538,6 +651,8 @@ app.get('/health', (_req, res) => {
       relation_types: ['accessory', 'consumable', 'software', 'service_contract'],
     },
     policies: {
+      condition_authority: 'canonical API only; MCP never infers refurbished or used',
+      condition_identity: 'one SKU may expose new/refurbished/used offers without cloned products',
       stocked_relation_default: 'available',
       stock_priority: ['stock_autoid', 'stock_distributie', 'out_of_stock_explicit_only'],
       non_stock_managed_relations: ['software', 'service_contract'],
